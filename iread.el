@@ -24,130 +24,59 @@
 
 ;;; Commentary:
 
-;; Iread is Isearch without the search---a framework for acting
+;; Iread is Isearch without the search---a utility for acting
 ;; incrementally on user input.  It is implemented as a minor mode,
 ;; with a number of normal and abnormal hooks.  But all the moving
-;; parts are encased by the function `iread', which lets you build up
-;; incremental read functionality by passing keyword arguments.
-
-;; To get a sense for how it works, try calling `iread-mode' directly.
-;; A prompt appears in the minibuffer.  Type something and it appears
-;; after the prompt.  Any event that is not a printable character
-;; exits.  Iread is just a skeleton; but one with many points of
-;; attachment.
-
-;; Here are the parameters to `iread' and the variables they bind.
-
-;; PROMPT, a required argument, binds `iread-prompt'.  This is the
-;; prompt that `iread-mode' displays.
-
-;; VAR, a required argument, specifies a symbol to use as an argument
-;; when constructing functions.  If VAR is nil, you can pass only
-;; functions and lists of functions to a parameter that binds an
-;; abnormal hook.  But if VAR is a symbol, you can also pass a quoted
-;; form to use as the body of a function.  The quoted form is wrapped
-;; in a function with VAR as its single argument.
-;; For example,
-;;    (iread "Don't: " 'var :do '(ignore var))
-;; Is equivalent to:
-;;    (iread "Don't: " nil :do (lambda (var) (ignore var)))
-
-;; LIGHTER binds `iread-lighter'.  This is the string to display in
-;; the modeline while `iread-mode' is on.
-
-;; INPUT binds `iread-input'---an initial input.
-
-;; DEFAULT is a local binding.  If the user does not type anything,
-;; this is the value to return.
-
-;; DO binds `iread-after-input-functions', an abnormal hook.  The
-;; functions in this hook are called with one argument, the
-;; current value of `iread-input'.
-
-;; KEYMAP is a keymap containing additional keybindings to use while
-;; `iread-mode' is on.  You can provide either a keymap as such, or as
-;; a list in the format that `easy-mmode-define-keymap' expects.
-
-;; (The keymap is copied, and the copy has its parent set to
-;; `iread-mode-map'.)
-
-;; FIRST binds `iread-mode-on-hook', a normal hook to run
-;; when `iread-mode' turns on.
-
-;; UNTIL binds `iread-end-test-functions', an abnormal hook.  The
-;; functions in this hook are called with the current value of
-;; `iread-input'.  If any function returns non-nil then `iread-mode'
-;; is turned off and `iread' peremptorily returns.
-
-;; UNLESS binds `iread-fail-test-functions', another abnormal hook.
-;; When a function in this hook returns non-nil, it prevents
-;; `iread-after-input-functions' from being run.  It also sets
-;; `iread-fail-prefix', so further input (input for which
-;; `iread-fail-prefix' satisfied `string-prefix-p') can be disregarded
-;; without testing.
-
-;; DELAY binds `iread-delay'.  This is the number of seconds to wait
-;; after input before running `iread-after-input-functions'.
-
-;; MIN binds `iread-delay'.  `iread-after-input-functions' will not be
-;; run unless `iread-input' is longer than MIN.  Note that the default
-;; value is 0, meaning that nothing is done until something is
-;; actually typed; if you want `iread-after-input-functions' to be run
-;; as soon as `iread-mode' starts---or if the user deletes all
-;; input---then you must set MIN to -1.
-
-;; LAST binds `iread-mode-off-hook', a normal hook run when
-;; `iread-mode' turns off.
-
-;; RETURN is a local binding.  If a function is passed as RETURN then
-;; this function will be called with `iread-input' and its return
-;; value will be the return value of `iread'.  For example,
-;;    (iread "Characters: " nil :return 'string-to-list)
-;; Is equivalent to:
-;;    (string-to-list (iread "Characters: " nil))
-
-;; N.  B.  The call to `iread-mode' is wrapped with the tag 'iread.
-;; You can throw to this tag at any time; `iread-input' will be set to
-;; the value of the throw.  This does not exit `iread' itself; LAST
-;; and RETURN will still be run.
+;; parts are encased by the macro `defiread', which lets you build up
+;; incremental behavior by passing keyword arguments.
 
 ;;; Code:
 
 (eval-when-compile (require 'cl))
 
-(defvar iread-recursive nil
-  "Whether Iread should act modally.")
-
 (defvar iread-lighter ""
-  "Lighter to display in mode line while reading.")
-(defvar iread-prompt "Type: ")
-(defvar iread-input "")
-(defvar iread-echo "")
-(defvar iread-fail-prefix nil)
-(defvar iread-delay 0)
-(defvar iread-min 0)
+  "Display in mode line while reading.")
+(defvar iread-prompt "Type: "
+  "Display as prompt in minibuffer.")
+(defvar iread-input nil
+  "Accumulate input.")
+(defvar iread-minibuffer-message nil
+  "Display after minibuffer contents.")
+(defvar iread-ignore-prefix nil
+  "Ignore input that begins with this.")
+(defvar iread-delay 0
+  "Wait this many seconds.")
+(defvar iread-min 0
+  "Require this many characters.")
 
-(defvar iread-mode-hook nil)
-(defvar iread-mode-on-hook nil)
-(defvar iread-mode-off-hook nil)
-(defvar iread-after-input-functions nil)
-(defvar iread-end-test-functions nil)
-(defvar iread-fail-test-functions nil)
+(defvar iread-mode-hook nil
+  "Run before and after `iread-mode'.")
+(defvar iread-on-hook nil
+  "Run before `iread-mode'.")
+(defvar iread-off-hook nil
+  "Run after `iread-mode'.")
+(defvar iread-after-input-functions nil
+  "Do something with `iread-input'.")
+(defvar iread-exit-functions nil
+  "Call with `iread-input' to exit Iread.")
+(defvar iread-ignore-functions nil
+  "Call with `iread-input' to ignore further input.")
+(defvar iread-require-functions nil
+  "Call with `iread-input' to determine if quitting is permitted.")
 
-(defsubst iread-input ()
-  "Return variable `iread-input' as a list (for `interactive')."
-  (if iread-mode
-      (list iread-input)))
-
-(defun iread-build-prompt ()
-  "Build minibuffer contents for function `iread-mode'."
-  (concat (propertize iread-prompt
-		      'face 'minibuffer-prompt)
-	  iread-input
-	  iread-echo))
+(defun iread-build-minibuffer ()
+  "Build minibuffer contents.
+Concatenate `iread-prompt', `iread-input', and
+`iread-minibuffer-message'."
+  (concat (apply 'propertize
+		 iread-prompt
+		 minibuffer-prompt-properties)
+	  iread-input " "
+	  iread-minibuffer-message))
 
 (defun iread-backspace ()
-  "Delete the last input character."
+  "Delete the last character of input.
+Remove the last character from `iread-input'."
   (interactive)
   (setq iread-input
 	(or
@@ -155,86 +84,117 @@
 	     (substring iread-input 0 -1)
 	   (args-out-of-range nil))
 	 iread-input))
-  (iread-do)
-  (iread-update))
+  (iread-update)
+  (iread-operate))
 
-(defun iread-fail-test ()
-  "Do nothing if input fails."
+(defun iread-may-exit-p ()
+  "Succeed if exit is permitted.
+Return non-nil if `iread-input' passes
+`iread-require-functions'."
+  (if iread-require-functions
+   (run-hook-with-args-until-success
+    'iread-require-functions iread-input) t))
+
+(defun iread-ignore-p ()
+  "Succeed if input should be ignored.
+Return nil if any function in `iread-ignore-functions' succeeds
+with `iread-input'."
   (or
-   (and iread-fail-prefix
-	(string-prefix-p iread-fail-prefix iread-input))
+   (and iread-ignore-prefix
+	(string-prefix-p iread-ignore-prefix iread-input))
    (and (run-hook-with-args-until-success
-	 'iread-fail-test-functions iread-input)
-	(setq iread-fail-prefix iread-input))
-   (setq iread-fail-prefix nil)))
+	 'iread-ignore-functions iread-input)
+	(setq iread-ignore-prefix iread-input))
+   (setq iread-ignore-prefix nil)))
 
-(defun iread-do ()
-  "Run `iread-after-input-functions' if appropriate."
-  (and (> (length iread-input) iread-min)
-       (let ((message-log-max nil))
-	 ;; This prevents flickering.
-	 (with-temp-message (iread-build-prompt)
-	   (sit-for iread-delay t)))
-       (not (iread-fail-test))
+(defun iread-min-length-p ()
+  "Fail if input is too short.
+Return non-nil if `iread-input' meets or exceeds `iread-min'."
+  (if (>= (length iread-input) iread-min) t
+    (setq iread-minibuffer-message nil)))
+
+(defun iread-delay-elapsed-p ()
+  "Fail if user types too fast.
+Return non-nil `iread-delay' has elapsed."
+  (let ((message-log-max nil))
+    ;; prevents flickering
+    (with-temp-message (iread-build-minibuffer)
+      (sit-for iread-delay t))))
+
+(defun iread-operate ()
+  "Operate on incremental input.
+Maybe run `iread-after-input-functions' on `iread-input'."
+  (and (iread-min-length-p)
+       (not (iread-ignore-p))
        (run-hook-with-args 'iread-after-input-functions iread-input))
   (iread-update))
 
 (defun iread-append ()
-  "Append to input."
+  "Append to input.
+Append `last-command-event' to `iread-input'."
   (interactive)
   (setq iread-input
 	(concat iread-input (char-to-string last-command-event)))
   (iread-update)
-  (iread-do))
+  (iread-operate))
 
-(defun iread-down-event-p (ev)
-  "Discard EV if it is a down event."
-  (if (mouse-event-p ev)
-      (memq 'down (event-modifiers ev))))
+(defun iread-unread-and-exit ()
+  "Unread last event and exit Iread.
+Push `last-command-event' to `unread-command-events' and exit
+recursive edit.
 
-(defun iread-fall-through ()
-  "Turn iread off and continue command."
+This function discards any down events it receives so the
+corresponding up events can be read."
   (interactive)
   (let ((ev last-command-event))
-    ;; We ignore the down event so the up event will have a chance at
-    ;; the keymap.  (If the down event itself is bound we will never
-    ;; get here).
-    (if (iread-down-event-p ev)
+    (if (memq 'down (event-modifiers ev))
 	(setq this-command 'undefined)
       (progn
-	(push ev unread-command-events)
-	(iread-mode 0)))))
+	(setq unread-command-events ev)
+	(iread-return)))))
 
 (defun iread-edit ()
-  "Edit input non-incrementally."
+  "Edit input non-incrementally.
+Pass `iread-input' to `read-string' as an initial input and set
+`iread-input' to the result."
   (interactive)
-  (with-local-quit
-   (let ((overriding-terminal-local-map minibuffer-local-map))
-     (setq iread-input
-	   (minibuffer-with-setup-hook (lambda () (insert iread-input))
-	     (read-string (concat iread-prompt "[EDIT] "))))))
+  (let ((overriding-terminal-local-map minibuffer-local-map))
+    (setq iread-input
+	  ;; A justifiable case of initial input.
+	  (read-string (concat iread-prompt "[EDIT] ") iread-input)))
   (iread-update)
-  (iread-do))
+  (iread-operate))
 
-(defun iread-echo (string args)
-  "Pass STRING and ARGS to `format' and show after minibuffer contents."
+(defun iread-minibuffer-message (format-string &rest args)
+  "Pass FORMAT-STRING and ARGS to `format' and show after minibuffer contents.
+Wrap with [...] if needed."
   (interactive)
-  (let ((str (apply 'format (list* format-string args nil))))
-   (setq iread-echo str)
-   (iread-update)
-   str))
+  (let (msg)
+    (if (or (null format-string)
+	    (string-equal format-string ""))
+	(setq msg nil)
+      (setq msg (apply 'format format-string args))
+      (unless (string-prefix-p "[" msg)
+	(setq msg (concat "[" msg "]"))))
+    (setq iread-minibuffer-message msg)
+    (iread-update)
+    msg))
 
 (defun iread-update ()
   "Update minibuffer display."
   (if (run-hook-with-args-until-success
-       'iread-end-test-functions
+       'iread-exit-functions
        iread-input)
-      (iread-mode 0)
+      (iread-return)
     (let ((message-log-max nil))
-      (message (format "%s" (iread-build-prompt))))))
+      (message "%s" (iread-build-minibuffer)))))
 
 (defun iread-define-keymap (map)
-  "Make a keymap from MAP."
+  "Return MAP as a keymap.
+If MAP is already a keymap, just return it.
+
+Otherwise, if MAP is a list, pass it to
+`easy-mmode-define-keymap'."
   (cond ((keymapp map) map)
 	((listp map) (easy-mmode-define-keymap map))
 	(t (error "Invalid keymap %s" map))))
@@ -247,35 +207,54 @@
 
 (defun iread-prep-map (map)
   "Return a map suitable for `iread-mode'.
-If MAP is non-nil, return a copy of it.
+If MAP is non-nil, return a copy of it with `iread-mode-map' as
+its parent.
+
 If MAP is nil, return `iread-mode-map'."
   (if map
    (iread-adopt-map
     (iread-define-keymap map))
    iread-mode-map))
 
-(defun iread-make-function (form &optional var)
-  "If needed, wrap FORM in a function taking VAR."
+(defun iread-hook-value-p (form)
+  "Return non-nil is FORM is a function or list of functions."
+  (or (functionp form)
+      (loop for fun in form always (functionp fun))))
+
+(defun iread-make-hook-value (form &optional args)
+  "Return FORM as a suitable value for a hook.
+If FORM is already a function or a list of functions, just return
+it.
+
+Otherwise, wrap FORM in a function.  If ARGS is provided, the
+function will use ARGS as its argument list; otherwise it takes
+no parameters.  If ARGS is a symbol, that will be the one
+parameter."
   (cond
-   ((functionp form)
-    form)
-   ((loop for fun in form always (functionp fun))
-    form)
-   ((and var (listp form))
-    `(lambda (,var) ,form))
-   ((and (null var) (listp form))
+   ((iread-hook-value-p form) form)
+   ((and args (listp form))
+    (setq args (if (listp args) args (list args)))
+    `(lambda ,args ,form))
+   ((and (null args) (listp form))
     `(lambda nil ,form))
    (t (error "No function"))))
 
-(defun iread-quit ()
-  "Exit Iread."
+(defun* iread-return (&optional (val iread-input))
+  "Exit Iread.  Return VAL if provided, `iread-input' otherwise."
+  (setq iread-input val)
+  (iread-mode 0))
+
+(defun iread-exit ()
+  "End Iread.  Return `iread-input'."
   (interactive)
-  (if iread-recursive
-      (progn
-       (setq iread-input nil)
-       (ignore-errors (exit-recursive-edit))
-       (call-interactively 'keyboard-quit))
-    (call-interactively 'keyboard-quit)))
+  (if (iread-may-exit-p)
+      (iread-return)))
+
+(defun iread-quit ()
+  "Abort Iread.  Return nil."
+  (interactive)
+  (setq iread-input nil)
+  (abort-recursive-edit))
 
 (defvar iread-mode-map
   (let ((map (make-keymap)))
@@ -285,72 +264,91 @@ If MAP is nil, return `iread-mode-map'."
        (set-char-table-range (nth 1 map) k 'iread-append))
      printable-chars)
     ;; Everything not explicitly bound should quit.
-    (define-key map [t] 'iread-fall-through)
+    (define-key map [t] 'iread-unread-and-exit)
     (define-key map "\C-e" 'iread-edit)
     (define-key map "\C-g" 'iread-quit)
     (define-key map "\C-h" 'help-command)
     (define-key map "\C-u" 'universal-argument)
-    (define-key map "\r" 'iread-mode)
-    (define-key map "\d" 'iread-backspace)
+    (define-key map [return] 'iread-exit)
+    (define-key map [backspace] 'iread-backspace)
     map)
   "Current keymap for `iread-mode'.")
 
 ;;;###autoload
 (define-minor-mode iread-mode
-  "Incremental read mode."
+  "Incremental X minor mode.
+Do not use this minor mode directly; use `iread' instead."
   :init-value nil
   :global t
   :lighter iread-lighter
   :keymap iread-mode-map
   (if iread-mode
       (progn
+	;; This must be run before the recursive edit.
+	(run-hooks 'iread-on-hook)
 	(iread-update)
-	(if iread-recursive (recursive-edit)))
-    (ignore-errors (exit-recursive-edit))))
+	(recursive-edit))
+    (ignore-errors (exit-recursive-edit))
+    (run-hooks 'iread-off-hook)))
 
 ;;;###autoload
-(defun* iread (prompt
-	       var
-	       &key
-	       lighter
-	       input
-	       default
-	       do
-	       keymap
-	       first
-	       until
-	       unless
-	       last
-	       return
-	       delay
-	       min)
-  (let ((iread-prompt prompt)
-	(iread-lighter lighter)
-	(iread-input input)
-	(iread-echo nil)
-	(iread-after-input-functions (iread-make-function do var))
-	(iread-mode-on-hook (iread-make-function first))
-	(iread-end-test-functions (iread-make-function until var))
-	(iread-fail-prefix nil)
-	(iread-fail-test-functions (iread-make-function unless var))
-	(iread-mode-off-hook (iread-make-function last))
-	(iread-delay (or delay 0))
-	(iread-min (or min 0))
-	(minor-mode-map-alist
-	 (cons (cons 'iread-mode (iread-prep-map keymap))
-	       minor-mode-map-alist))
-	(iread-recursive t))
-    (unwind-protect
-     (setq iread-input
-	   (catch 'iread
-	     (iread-mode 1)
-	     iread-input))
-     (iread-mode 0))
-    (if (and default
-	     (string-equal iread-input ""))
-	(setq iread-input default))
-    (if return (funcall return iread-input) iread-input)))
-(put 'iread 'lisp-indent-hook 2)
+(defmacro* defiread
+    (name
+     args
+     doc
+     prompt
+     var
+     &key
+     (lighter "")
+     (initial "")
+     default
+     do
+     keymap
+     first
+     until
+     unless
+     last
+     result
+     require
+     (delay 0)
+     (min 0))
+  "Define an incremental read."
+  (declare (indent defun))
+  `(fset ',name
+	 (lambda ,args ,doc
+	   (let ((iread-prompt ,prompt)
+		 (iread-lighter ,lighter)
+		 (iread-input ,initial)
+		 (iread-on-hook
+		  (iread-make-hook-value ,first))
+		 (iread-off-hook
+		  (iread-make-hook-value ,last))
+		 (iread-after-input-functions
+		  (iread-make-hook-value ,do ,var))
+		 (iread-exit-functions
+		  (iread-make-hook-value ,until ,var))
+		 (iread-ignore-functions
+		  (iread-make-hook-value ,unless ,var))
+		 (result
+		  (iread-make-hook-value ,result ,var))
+		 (iread-require-functions
+		  (iread-make-hook-value ,require ,var))
+		 (iread-delay ,delay)
+		 (iread-min ,min)
+		 (default ,default)
+		 iread-ignore-prefix
+		 iread-minibuffer-message
+		 (minor-mode-map-alist
+		  (cons (cons 'iread-mode (iread-prep-map ,keymap))
+			minor-mode-map-alist)))
+	     (unwind-protect
+		 (iread-mode 1)
+	       (iread-mode 0))
+	     (if (and default (string-equal iread-input ""))
+		 (setq iread-input default))
+	     (if result (if (functionp result)
+			    (funcall result iread-input)
+			  result) iread-input)))))
 
 (provide 'iread)
 
