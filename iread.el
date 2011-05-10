@@ -310,7 +310,7 @@ Do not use this minor mode directly; use `iread' instead."
      last
      result
      require
-     (delay 0)
+     (delay idle-update-delay)
      (min 0))
   "Define an incremental read."
   (declare (indent defun))
